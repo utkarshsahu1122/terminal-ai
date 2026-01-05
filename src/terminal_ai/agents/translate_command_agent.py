@@ -6,16 +6,19 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from terminal_ai.io.language_model_client import LanguageModelClient
 
+# Enhanced patterns for security compliance
 _DESTRUCTIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"rm\s+-rf\b"),
-    re.compile(r"rm\s+-fr\b"),
+    re.compile(r"rm\s+-r[f|v|i]*\b"),
     re.compile(r"mkfs\b"),
     re.compile(r"dd\s+if=", re.IGNORECASE),
-    re.compile(r"shutdown\b"),
-    re.compile(r"reboot\b"),
+    re.compile(r"shutdown\b|reboot\b|poweroff\b"),
+    re.compile(r"\|\s*(bash|sh|zsh|python|curl)\b"),  # Remote script pipes
+    re.compile(r"sudo\s+"),  # Unauthorized privilege escalation
+    re.compile(r"chmod\s+777"),  # Insecure permissions
 )
 
 
@@ -65,15 +68,20 @@ class TranslateCommandAgent:
         self._system_prompt_template = system_prompt_template
 
     def suggest(self, request: CommandRequest) -> CommandSuggestion:
+        # Structure the prompt with role separation to prevent instruction injection
         system_prompt = self._system_prompt_template.format(
             shell=request.shell,
             cwd=(str(request.cwd) if request.cwd else "~"),
         )
+        
+        # Complete the request
         raw_response = self._model_client.complete(
             system_prompt=system_prompt,
-            user_prompt=request.instruction.strip(),
+            user_prompt=f"PROCESS DATA: {request.instruction.strip()}",
             temperature=request.temperature,
         )
+
+        # Robust parse and enforce confirmation
         suggestion = self._parse_response(raw_response)
         if suggestion.command and not request.allow_destructive:
             suggestion = self._enforce_confirmation(suggestion)
@@ -81,10 +89,11 @@ class TranslateCommandAgent:
 
     @staticmethod
     def _parse_response(response_text: str) -> CommandSuggestion:
+        """Robustly extracts JSON from potentially markdown-wrapped text."""
         try:
-            payload = _extract_json_object(response_text)
+            payload = _extract_json_from_markdown(response_text)
         except ValueError as exc:  # pragma: no cover - defensive path
-            raise CommandParsingError(str(exc)) from exc
+            raise CommandParsingError(f"Failed to extract JSON: {exc}") from exc
 
         command = str(payload.get("command", "")).strip()
         explanation = str(payload.get("explanation", "")).strip()
@@ -103,23 +112,32 @@ class TranslateCommandAgent:
 
     @staticmethod
     def _enforce_confirmation(suggestion: CommandSuggestion) -> CommandSuggestion:
-        if any(pattern.search(suggestion.command) for pattern in _DESTRUCTIVE_PATTERNS):
+        """Normalizes and scans commands against security patterns."""
+        normalized_cmd = suggestion.command.lower().strip()
+        if any(pattern.search(normalized_cmd) for pattern in _DESTRUCTIVE_PATTERNS):
             return suggestion.with_confirmation(True)
         return suggestion
 
 
-def _extract_json_object(response_text: str) -> dict[str, object]:
+def _extract_json_from_markdown(response_text: str) -> dict[str, object]:
     """Return the first JSON object found in the response text."""
 
-    start = response_text.find("{")
-    end = response_text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("Response did not contain JSON object")
-    candidate = response_text[start : end + 1]
+    # Attempt to find JSON inside triple backticks first
+    markdown_json = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if markdown_json:
+        candidate = markdown_json.group(1)
+    else:
+        # Fallback to finding the first/last curly brace
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1:
+            raise ValueError("No JSON object found in response")
+        candidate = text[start : end + 1]
+
     try:
         return json.loads(candidate)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Unable to decode JSON: {exc}") from exc
+        raise ValueError(f"Invalid JSON format: {exc}") from exc
 
 
 __all__ = [

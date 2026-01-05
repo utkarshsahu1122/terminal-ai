@@ -20,6 +20,13 @@ from terminal_ai.io.prompt_loader import load_prompt
 
 _DEFAULT_PROMPT = "command_synthesis.txt"
 _DEFAULT_MODEL = os.getenv("TERMINAL_AI_MODEL", "gpt-4o-mini")
+_BASE_URL = os.getenv("TERMINAL_AI_BASE_URL", "api.openai.com")
+
+# ANSI Color codes for better UX
+CLR_G = "\033[92m"  # Green
+CLR_Y = "\033[93m"  # Yellow
+CLR_D = "\033[2m"   # Dim
+CLR_R = "\033[0m"   # Reset
 
 _EMBEDDED_PROMPT = dedent(
     """\
@@ -55,27 +62,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     instruction = " ".join(args.instruction).strip()
     if not instruction:
         try:
-            instruction = input("Describe the task> ").strip()
+            instruction = input(f"{CLR_G}Describe the task>{CLR_R} ").strip()
         except EOFError:
             instruction = ""
     if not instruction:
-        print("No instruction provided.", file=sys.stderr)
+        print(f"{CLR_Y}No instruction provided.{CLR_R}", file=sys.stderr)
         return 1
 
+    # API Key Logic: Optional for local endpoints
+    api_key = args.api_key or os.getenv("OPENAI_API_KEY")
+    is_local = "localhost" in args.base_url or "127.0.0.1" in args.base_url
+    if not api_key and not is_local:
+        print("Missing API key. Set OPENAI_API_KEY or use a local provider.", file=sys.stderr)
+        return 1
+
+    # Load Prompt with Fallback
     try:
         prompt_template = load_prompt(args.prompt)
-    except FileNotFoundError as exc:
-        if args.prompt != _DEFAULT_PROMPT:
-            print(f"{exc}", file=sys.stderr)
-            return 1
+    except FileNotFoundError:
+        if args.prompt != _DEFAULT_PROMPT: raise
         prompt_template = _EMBEDDED_PROMPT
 
-    api_key = args.api_key or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("Missing OpenAI API key. Set OPENAI_API_KEY or pass --api-key.", file=sys.stderr)
-        return 1
-
-    client = OpenAIChatClient(model=args.model, api_key=api_key, base_url=args.base_url)
+    client = OpenAIChatClient(model=args.model, api_key=api_key or "local", base_url=args.base_url)
     agent = TranslateCommandAgent(model_client=client, system_prompt_template=prompt_template)
 
     cwd = Path(args.cwd).expanduser().resolve() if args.cwd else Path.cwd()
@@ -96,41 +104,49 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Model request failed: {exc}", file=sys.stderr)
         return 3
 
+    # Handle Follow-ups
     if suggestion.follow_up and not suggestion.command:
-        print(f"Follow-up needed: {suggestion.follow_up}")
-        return 10
+        print(f"{CLR_Y}Follow-up needed:{CLR_R} {suggestion.follow_up}")
+        return 0
 
-    print(f"Command: {suggestion.command}")
+    print(f"\n{CLR_G}Command:{CLR_R} {suggestion.command}")
     if suggestion.explanation:
-        print(f"Why: {suggestion.explanation}")
+        print(f"{CLR_D}Why: {suggestion.explanation}{CLR_R}\n")
 
     if args.no_exec:
         return 0
 
+    # Confirm Execution
     should_execute = args.accept or not suggestion.requires_confirmation
     if not should_execute:
         try:
-            answer = input("Execute command? [y/N]: ").strip().lower()
+            prompt_text = f"Execute this command on {args.shell}? [y/N]: "
+            answer = input(prompt_text).strip().lower()
+            should_execute = answer in {"y", "yes"}
         except EOFError:
-            answer = ""
-        should_execute = answer in {"y", "yes"}
+            should_execute = False
 
     if not should_execute:
         print("Aborted.")
         return 0
 
+    # Execute
     runner = CommandRunner(shell=args.shell, dry_run=args.dry_run)
     result = runner.execute(suggestion.command, cwd=cwd)
 
     if result.stdout:
         print(result.stdout, end="")
     if result.stderr:
-        print(result.stderr, end="", file=sys.stderr)
+        print(f"{CLR_Y}{result.stderr}{CLR_R}", end="", file=sys.stderr)
     return result.returncode
 
+    if result.returncode != 0:
+        print(f"\n{CLR_Y}Command failed with exit code {result.returncode}{CLR_R}")
+        
+    return result.returncode
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description="Terminal AI: Natural Language to Shell")
     parser.add_argument("instruction", nargs="*", help="Natural language description of the task")
     parser.add_argument("--prompt", default=_DEFAULT_PROMPT, help="Prompt template filename inside prompts/")
     parser.add_argument("--model", default=_DEFAULT_MODEL, help="Model name for the OpenAI Chat API")

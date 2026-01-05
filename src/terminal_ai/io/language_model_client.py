@@ -21,8 +21,6 @@ class LanguageModelClient(Protocol):
     ) -> str:
         """Return the text completion for the provided prompts."""
         ...
-
-
 @dataclass(slots=True)
 class OpenAIChatClient:
     """Minimal synchronous client using OpenAI's chat completions API."""

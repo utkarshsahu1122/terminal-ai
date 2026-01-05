@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-
 @dataclass(slots=True)
 class CommandExecutionResult:
     """Represents the outcome of a shell command execution."""

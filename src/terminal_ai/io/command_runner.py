@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,25 +39,46 @@ class CommandRunner:
         env: Mapping[str, str] | None = None,
     ) -> CommandExecutionResult:
         if self.dry_run:
+            print(f"[Dry Run] Would execute: {command}")
             return CommandExecutionResult(command=command, returncode=0, stdout="", stderr="")
 
         full_env = os.environ.copy()
         if env:
             full_env.update(env)
 
-        completed = subprocess.run(
+        # Use Popen to allow real-time terminal output while capturing strings
+        process = subprocess.Popen(
             command,
-            capture_output=True,
-            text=True,
             shell=True,
             executable=self.shell,
             cwd=str(cwd) if cwd else None,
-            env=full_env,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env={**os.environ, **(env or {})}
         )
+
+        stdout_acc, stderr_acc = [], []
+        
+        # Real-time output handling
+        while True:
+            line = process.stdout.readline()
+            if not line and process.poll() is not None:
+                break
+            if line:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                stdout_acc.append(line)
+
+        _, stderr = process.communicate()
+        if stderr:
+            sys.stderr.write(stderr)
+            stderr_acc.append(stderr)
+
         return CommandExecutionResult(
             command=command,
-            returncode=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            returncode=process.returncode,
+            stdout="".join(stdout_acc),
+            stderr="".join(stderr_acc)
         )

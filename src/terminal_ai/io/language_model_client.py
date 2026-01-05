@@ -39,6 +39,12 @@ class OpenAIChatClient:
         user_prompt: str,
         temperature: float = 0.0,
     ) -> str:
+        # Compatibility check for local LLM providers (Ollama/vLLM)
+        is_local = "localhost" in self.base_url or "127.0.0.1" in self.base_url
+        headers = {"Content-Type": "application/json"}
+        if not is_local:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
         payload = json.dumps(
             {
                 "model": self.model,
@@ -50,19 +56,18 @@ class OpenAIChatClient:
             }
         ).encode("utf-8")
 
+        # Use a more robust request with a custom User-Agent
         request = urllib.request.Request(
-            f"{self.base_url}/chat/completions",
+            f"{self.base_url.rstrip('/')}/chat/completions",
             data=payload,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
+            headers=headers,
+            method="POST"
         )
+        request.add_header("User-Agent", "TerminalAI-Agent/2026.1")
 
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:  # type: ignore[arg-type]
-                raw_body = response.read()
+                raw_body = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:  # pragma: no cover - network path
             detail = exc.read().decode("utf-8", "ignore") if hasattr(exc, "read") else ""
             raise RuntimeError(

@@ -62,3 +62,16 @@ def test_complete_raises_on_url_error(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpenAIChatClient(model="gpt-test", api_key="key")
     with pytest.raises(RuntimeError):
         client.complete(system_prompt="SYS", user_prompt="hi")
+
+
+def test_complete_omits_auth_header_for_local_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_urlopen(request: Request, timeout: float) -> _DummyResponse:
+        # Crucial check: Local providers like Ollama should not receive Bearer tokens
+        assert "Authorization" not in request.headers
+        return _DummyResponse({"choices": [{"message": {"content": "local-response"}}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    # Using 127.0.0.1 triggers the 'is_local' logic
+    client = OpenAIChatClient(model="llama3", api_key="none", base_url="http://127.0.0.1:11434")
+    text = client.complete(system_prompt="SYS", user_prompt="hi")
+    assert text == "local-response"

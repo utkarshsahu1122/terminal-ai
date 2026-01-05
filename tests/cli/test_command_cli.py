@@ -41,3 +41,24 @@ def test_main_uses_embedded_prompt_when_missing(monkeypatch: pytest.MonkeyPatch)
 
     exit_code = command_cli.main(["list", "files", "--no-exec"])
     assert exit_code == 0
+
+
+def test_main_allows_no_api_key_for_local_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Standard: Local LLMs shouldn't require dummy keys
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(command_cli, "OpenAIChatClient", _DummyClient)
+    
+    # Passing a localhost URL should bypass the API key check
+    exit_code = command_cli.main(["list", "--base-url", "http://localhost:11434", "--no-exec"])
+    assert exit_code == 0
+
+
+def test_main_respects_custom_shell_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(command_cli, "OpenAIChatClient", _DummyClient)
+    
+    # We check if the parser defaults to the env shell
+    parser = command_cli._build_parser()
+    args = parser.parse_args([])
+    assert args.shell == "/bin/zsh"
